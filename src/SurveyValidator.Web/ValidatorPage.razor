@@ -1,0 +1,569 @@
+@inject IJSRuntime JS
+
+<header class="app-header">
+    <h1>Wildlife Survey Data Validator</h1>
+    <div class="toolbar">
+        <label class="btn primary" title="Open a survey data file (.dat or .csv) from this computer">
+            Open data file
+            <InputFile @key="fileInputKey" class="visually-hidden" OnChange="OnDataFileChosen" accept=".dat,.csv,.txt" />
+        </label>
+        <button class="btn" disabled="@(doc is null)" @onclick="DownloadCsv"
+                title="Save the cleaned data to this computer as a CSV file">
+            Download cleaned CSV
+        </button>
+        <button class="btn" disabled="@(doc is null || doc.DeletedCount == 0)" @onclick="UndoDelete">
+            Undo delete@(doc is { DeletedCount: > 0 } ? $" ({doc.DeletedCount})" : "")
+        </button>
+        <span class="spacer"></span>
+        <button class="btn quiet" aria-expanded="@showTemplate" @onclick="() => showTemplate = !showTemplate">Template</button>
+        <button class="btn quiet" aria-expanded="@showHelp" @onclick="() => showHelp = !showHelp">Help</button>
+    </div>
+</header>
+
+@if (pendingAction is not null)
+{
+    <div class="confirm" role="alertdialog">
+        <span>@pendingMessage</span>
+        <button class="btn danger" @onclick="ConfirmPending">Discard edits and continue</button>
+        <button class="btn" @onclick="CancelPending">Cancel</button>
+    </div>
+}
+
+@if (showHelp)
+{
+    <section class="panel">
+        <h2>About</h2>
+        <p>
+            This application checks and cleans aerial wildlife survey data. Open a data file, fix or delete the
+            highlighted lines, then download the result as a CSV file. The file is read and cleaned in this browser;
+            it is not sent anywhere.
+        </p>
+        <p>Each record needs three entries, as listed in the current template:</p>
+        <ul>
+            <li>Species: @string.Join(", ", template.Species)</li>
+            <li>Distance class (one only): @string.Join(", ", template.DistanceClasses)</li>
+            <li>Group size (one or more, comma-separated): @string.Join(", ", template.GroupSizes)</li>
+        </ul>
+        <p>
+            Transect markers (<code>@template.TransectStart</code> opens a transect, <code>@template.TransectEnd</code>
+            closes it) are kept and checked for correct order.
+        </p>
+        <ul class="legend">
+            <li><span class="swatch row-incomplete"></span> Record with a missing entry (the empty cell is marked in gold)</li>
+            <li><span class="swatch row-multi"></span> Record with more than one distance class: choose one</li>
+            <li><span class="swatch row-transect"></span> Transect marker out of sequence</li>
+        </ul>
+        <p>
+            Species and distance are chosen from lists. Group size is typed. The 11 auto-recorded columns
+            (time to HTOL) are shown to the right: double-click one to edit it, then press Enter to keep the
+            change or Escape to abandon it. The downloaded file keeps the original column order.
+        </p>
+    </section>
+}
+
+@if (showTemplate)
+{
+    <section class="panel">
+        <h2>Template <small>(@templateName)</small></h2>
+        <p>
+            The template lists the values a data file is checked against. Load your own to check a survey that
+            used different species, distance classes or group sizes. It is remembered in this browser.
+        </p>
+        <dl class="template-lists">
+            <dt>Species</dt><dd>@string.Join(", ", template.Species)</dd>
+            <dt>Distance classes</dt><dd>@string.Join(", ", template.DistanceClasses)</dd>
+            <dt>Group sizes</dt><dd>@string.Join(", ", template.GroupSizes)</dd>
+            <dt>Transect opens with</dt><dd><code>@template.TransectStart</code></dd>
+            <dt>Transect closes with</dt><dd><code>@template.TransectEnd</code></dd>
+            <dt>Header line contains</dt><dd><code>@template.HeaderMarker</code></dd>
+        </dl>
+        <div class="toolbar">
+            <label class="btn">
+                Load template file
+                <InputFile @key="templateInputKey" class="visually-hidden" OnChange="OnTemplateFileChosen" accept=".csv,.txt" />
+            </label>
+            <button class="btn" @onclick="DownloadTemplate">Download this template</button>
+            <button class="btn" @onclick="SwapTransectMarkers"
+                    title="Exchange which marker opens a transect and which closes it">
+                Swap transect markers
+            </button>
+            <button class="btn" @onclick="ResetTemplate">Reset to built-in</button>
+        </div>
+    </section>
+}
+
+@if (doc is null)
+{
+    <section class="empty">
+        <p>Open a survey data file to begin.</p>
+        <p class="muted">The file stays on this computer. Nothing is uploaded.</p>
+    </section>
+}
+else
+{
+    SurveySummary s = doc.Summary;
+    <section class="summary">
+        <div class="filters" role="group" aria-label="Show rows">
+            <button class="chip" aria-pressed="@(filter == RowFilter.All)" @onclick="() => SetFilter(RowFilter.All)">
+                All <b>@s.Total</b>
+            </button>
+            <button class="chip row-incomplete" aria-pressed="@(filter == RowFilter.Incomplete)" @onclick="() => SetFilter(RowFilter.Incomplete)">
+                Incomplete <b>@s.Incomplete</b>
+            </button>
+            <button class="chip row-multi" aria-pressed="@(filter == RowFilter.MultipleDistances)" @onclick="() => SetFilter(RowFilter.MultipleDistances)">
+                Multiple distances <b>@s.MultipleDistances</b>
+            </button>
+            <button class="chip row-transect" aria-pressed="@(filter == RowFilter.TransectErrors)" @onclick="() => SetFilter(RowFilter.TransectErrors)">
+                Transect errors <b>@s.TransectErrors</b>
+            </button>
+        </div>
+        <span class="counts">
+            @s.Complete complete &middot;
+            @template.TransectStart: @s.TransectStartCount, @template.TransectEnd: @s.TransectEndCount
+            <b class="@(s.TransectMarkersMatch ? "good" : "bad")">@(s.TransectMarkersMatch ? "matched" : "MISMATCH")</b>
+        </span>
+        <label class="toggle">
+            <input type="checkbox" @bind="hideFixed" /> Hide the 11 auto-recorded columns
+        </label>
+    </section>
+
+    <div class="grid-wrap">
+        <table class="grid">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th class="num">Line</th>
+                    <th>Species</th>
+                    <th>GroupSize</th>
+                    <th>Distance</th>
+                    <th>Recorded distances</th>
+                    <th>Notes</th>
+                    @if (!hideFixed)
+                    {
+                        @foreach (string name in SurveyRecord.FixedColumnNames)
+                        {
+                            <th>@name</th>
+                        }
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize Items="view" Context="r" ItemSize="33" OverscanCount="20" SpacerElement="tr">
+                    <tr @key="r" class="@RowClass(r)">
+                        <td class="actions">
+                            <button class="delete" title="Delete line @r.Line" aria-label="Delete line @r.Line" @onclick="() => DeleteRow(r)">&#x2715;</button>
+                        </td>
+                        <td class="num">@r.Line</td>
+                        <td class="@(r.IsMissing("species") ? "flag" : null)">
+                            <select value="@r.Species" aria-label="Species" @onchange="e => OnSpecies(r, e)">
+                                <option value=""></option>
+                                @foreach (string sp in template.Species)
+                                {
+                                    <option value="@sp">@sp</option>
+                                }
+                                <option value="@template.TransectStart">@template.TransectStart</option>
+                                <option value="@template.TransectEnd">@template.TransectEnd</option>
+                            </select>
+                        </td>
+                        <td class="@(r.IsMissing("group size") ? "flag" : null)">
+                            @if (!r.IsTransectMarker)
+                            {
+                                <input @key="(r, inputEpoch)" class="group-size" value="@r.GroupSize" aria-label="Group size"
+                                       @onchange="e => OnGroupSize(r, e)" />
+                            }
+                        </td>
+                        <td class="@(r.IsMissing("distance") || r.HasMultipleDistances ? "flag" : null)">
+                            @if (!r.IsTransectMarker)
+                            {
+                                <select value="@r.Distance" aria-label="Distance" @onchange="e => OnDistance(r, e)">
+                                    <option value=""></option>
+                                    @foreach (string d in template.DistanceClasses)
+                                    {
+                                        <option value="@d">@d</option>
+                                    }
+                                </select>
+                            }
+                        </td>
+                        <td class="@(r.HasMultipleDistances ? "flag" : null)">
+                            @if (r.HasMultipleDistances)
+                            {
+                                @foreach (string d in r.RecordedDistances)
+                                {
+                                    string choice = d;
+                                    <button class="pick" title="Use this distance" @onclick="() => ChooseDistance(r, choice)">@choice</button>
+                                }
+                            }
+                            else
+                            {
+                                @r.AllDistancesText
+                            }
+                        </td>
+                        <td class="notes" title="@r.Notes">@r.Notes</td>
+                        @if (!hideFixed)
+                        {
+                            @for (int i = 0; i < SurveyRecord.FixedColumnCount; i++)
+                            {
+                                int col = i;
+                                @if (ReferenceEquals(editRecord, r) && editColumn == col)
+                                {
+                                    <td class="editing">
+                                        <input @ref="editInput" value="@editText"
+                                               aria-label="@SurveyRecord.FixedColumnNames[col]"
+                                               @oninput="e => editText = e.Value?.ToString() ?? string.Empty"
+                                               @onkeydown="OnEditKey" @onblur="CommitEdit" />
+                                    </td>
+                                }
+                                else
+                                {
+                                    <td title="Double-click to edit" @ondblclick="() => BeginEdit(r, col)">@r.Fixed[col]</td>
+                                }
+                            }
+                        }
+                    </tr>
+                </Virtualize>
+            </tbody>
+        </table>
+        @if (view.Count == 0)
+        {
+            <p class="empty-filter">No rows to show for this filter.</p>
+        }
+    </div>
+}
+
+<footer class="status @(statusIsError ? "error" : null)" role="status">@status</footer>
+
+@code {
+    private enum RowFilter { All, Incomplete, MultipleDistances, TransectErrors }
+
+    private const long MaxDataFileBytes = 100 * 1024 * 1024;
+    private const long MaxTemplateFileBytes = 1024 * 1024;
+    private const string StoredTemplateKey = "wildlifeSurveyValidator.template";
+    private const string StoredTemplateNameKey = "wildlifeSurveyValidator.templateName";
+    private const string BuiltInName = "built-in";
+
+    private SurveyTemplate template = SurveyTemplate.Default;
+    private string templateName = BuiltInName;
+
+    private SurveyDocument? doc;
+    private string? fileName;
+    private string? rawText;
+
+    private List<SurveyRecord> view = new();
+    private RowFilter filter = RowFilter.All;
+    private bool hideFixed;
+    private bool showTemplate;
+    private bool showHelp;
+
+    private string status = "Ready";
+    private bool statusIsError;
+
+    private int fileInputKey;
+    private int templateInputKey;
+    private int inputEpoch;
+
+    // Cell being edited among the 11 auto-recorded columns.
+    private SurveyRecord? editRecord;
+    private int editColumn;
+    private string editText = "";
+    private ElementReference editInput;
+    private bool focusEditInput;
+
+    // An action waiting for the user to agree to lose unsaved edits.
+    private Func<Task>? pendingAction;
+    private string pendingMessage = "";
+
+    private bool unsavedSentToBrowser;
+
+    // ------------------------------------------------------------- lifecycle
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadStoredTemplate();
+        }
+
+        if (focusEditInput)
+        {
+            focusEditInput = false;
+            await JS.InvokeVoidAsync("surveyValidator.focus", editInput);
+        }
+
+        bool unsaved = doc?.IsModified == true;
+        if (unsaved != unsavedSentToBrowser)
+        {
+            unsavedSentToBrowser = unsaved;
+            await JS.InvokeVoidAsync("surveyValidator.setUnsaved", unsaved);
+        }
+    }
+
+    private void SetStatus(string message, bool isError = false)
+    {
+        status = message;
+        statusIsError = isError;
+    }
+
+    // ------------------------------------------------------------- data file
+
+    private async Task OnDataFileChosen(InputFileChangeEventArgs e)
+    {
+        fileInputKey++; // lets the same file be chosen again later
+        IBrowserFile file = e.File;
+        string text;
+        try
+        {
+            using Stream stream = file.OpenReadStream(MaxDataFileBytes);
+            using var reader = new StreamReader(stream);
+            text = await reader.ReadToEndAsync();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Error loading file: {ex.Message}", isError: true);
+            return;
+        }
+
+        string name = file.Name;
+        await RunUnlessUnsaved(
+            $"Opening {name} will discard the edits made to {fileName}.",
+            () => { LoadData(text, name); return Task.CompletedTask; });
+    }
+
+    private void LoadData(string text, string name)
+    {
+        rawText = text;
+        fileName = name;
+        doc = SurveyDocument.Load(text, template);
+        editRecord = null;
+        filter = RowFilter.All;
+        RefreshView();
+
+        SurveySummary s = doc.Summary;
+        SetStatus($"File loaded: {name}. {s.Total} records, {s.Incomplete} incomplete, " +
+                  $"{s.MultipleDistances} with multiple distances, {s.TransectErrors} transect errors." +
+                  (doc.HadHeaderLine ? " Header line skipped." : ""));
+    }
+
+    private async Task DownloadCsv()
+    {
+        if (doc is null) return;
+        string name = Path.GetFileNameWithoutExtension(fileName ?? "survey") + "_cleaned.csv";
+        await Download(name, "text/csv", doc.ToCsvBytes());
+        doc.MarkSaved();
+
+        SurveySummary s = doc.Summary;
+        SetStatus(s.NeedingAttention == 0
+            ? $"File saved: {name}"
+            : $"File saved: {name}. Note: {s.Incomplete} incomplete, {s.MultipleDistances} multiple-distance and " +
+              $"{s.TransectErrors} transect-error rows were still flagged.");
+    }
+
+    private async Task Download(string name, string contentType, byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes);
+        using var streamRef = new DotNetStreamReference(stream);
+        await JS.InvokeVoidAsync("surveyValidator.downloadFile", name, contentType, streamRef);
+    }
+
+    // -------------------------------------------------------------- template
+
+    private async Task LoadStoredTemplate()
+    {
+        try
+        {
+            string? stored = await JS.InvokeAsync<string?>("surveyValidator.getStored", StoredTemplateKey);
+            if (string.IsNullOrWhiteSpace(stored)) return;
+            template = SurveyTemplate.Parse(stored);
+            templateName = await JS.InvokeAsync<string?>("surveyValidator.getStored", StoredTemplateNameKey) ?? "saved";
+            StateHasChanged();
+        }
+        catch (Exception)
+        {
+            // A stored template that can no longer be read is ignored; the built-in one stays in use.
+        }
+    }
+
+    private async Task OnTemplateFileChosen(InputFileChangeEventArgs e)
+    {
+        templateInputKey++;
+        SurveyTemplate loaded;
+        try
+        {
+            using Stream stream = e.File.OpenReadStream(MaxTemplateFileBytes);
+            using var reader = new StreamReader(stream);
+            loaded = SurveyTemplate.Parse(await reader.ReadToEndAsync());
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Template not loaded: {ex.Message}", isError: true);
+            return;
+        }
+
+        await ChangeTemplate(loaded, e.File.Name);
+    }
+
+    private Task SwapTransectMarkers() =>
+        ChangeTemplate(template.WithTransectMarkersSwapped(),
+            templateName.EndsWith(" (markers swapped)")
+                ? templateName[..^" (markers swapped)".Length]
+                : templateName + " (markers swapped)");
+
+    private Task ResetTemplate() => ChangeTemplate(SurveyTemplate.Default, BuiltInName);
+
+    private Task ChangeTemplate(SurveyTemplate newTemplate, string name) =>
+        RunUnlessUnsaved(
+            $"Changing the template re-reads {fileName} and discards the edits made to it.",
+            async () =>
+            {
+                template = newTemplate;
+                templateName = name;
+                if (name == BuiltInName)
+                {
+                    await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateKey);
+                    await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateNameKey);
+                }
+                else
+                {
+                    await JS.InvokeVoidAsync("surveyValidator.setStored", StoredTemplateKey, newTemplate.ToText());
+                    await JS.InvokeVoidAsync("surveyValidator.setStored", StoredTemplateNameKey, name);
+                }
+
+                if (rawText is not null && fileName is not null)
+                    LoadData(rawText, fileName);
+                SetStatus($"Template in use: {name}." + (doc is null ? "" : $" {fileName} re-checked."));
+            });
+
+    private Task DownloadTemplate() =>
+        Download("survey-template.csv", "text/csv", Encoding.UTF8.GetBytes(template.ToText()));
+
+    // --------------------------------------------------- unsaved-edit guard
+
+    private async Task RunUnlessUnsaved(string message, Func<Task> action)
+    {
+        if (doc?.IsModified == true)
+        {
+            pendingMessage = message;
+            pendingAction = action;
+        }
+        else
+        {
+            await action();
+        }
+    }
+
+    private async Task ConfirmPending()
+    {
+        Func<Task>? action = pendingAction;
+        pendingAction = null;
+        if (action is not null) await action();
+    }
+
+    private void CancelPending()
+    {
+        pendingAction = null;
+        SetStatus("Cancelled. Your edits are unchanged.");
+    }
+
+    // ------------------------------------------------------------ filtering
+
+    private void SetFilter(RowFilter newFilter)
+    {
+        filter = newFilter;
+        RefreshView();
+    }
+
+    private void RefreshView()
+    {
+        if (doc is null)
+        {
+            view = new();
+            return;
+        }
+
+        view = filter switch
+        {
+            RowFilter.Incomplete => doc.Records.Where(r => !r.IsComplete).ToList(),
+            RowFilter.MultipleDistances => doc.Records.Where(r => r.HasMultipleDistances).ToList(),
+            RowFilter.TransectErrors => doc.Records.Where(r => r.TransectError).ToList(),
+            _ => doc.Records.ToList()
+        };
+    }
+
+    private static string? RowClass(SurveyRecord r) => r.Status switch
+    {
+        RowStatus.TransectError => "row-transect",
+        RowStatus.Incomplete => "row-incomplete",
+        RowStatus.MultipleDistances => "row-multi",
+        _ => null
+    };
+
+    // --------------------------------------------------------------- editing
+
+    private void AfterEdit(SurveyRecord r, string? error)
+    {
+        if (error is not null)
+        {
+            inputEpoch++; // re-creates the text boxes so a rejected entry is not left on screen
+            SetStatus($"Line {r.Line}: {error}", isError: true);
+            return;
+        }
+
+        RefreshView();
+        SetStatus($"Line {r.Line}: {r.Notes}");
+    }
+
+    private void OnSpecies(SurveyRecord r, ChangeEventArgs e) =>
+        AfterEdit(r, doc!.SetSpecies(r, e.Value?.ToString()));
+
+    private void OnDistance(SurveyRecord r, ChangeEventArgs e) =>
+        AfterEdit(r, doc!.SetDistance(r, e.Value?.ToString()));
+
+    private void ChooseDistance(SurveyRecord r, string distance) =>
+        AfterEdit(r, doc!.SetDistance(r, distance));
+
+    private void OnGroupSize(SurveyRecord r, ChangeEventArgs e) =>
+        AfterEdit(r, doc!.SetGroupSize(r, e.Value?.ToString()));
+
+    private void DeleteRow(SurveyRecord r)
+    {
+        doc!.Delete(r);
+        if (ReferenceEquals(editRecord, r)) editRecord = null;
+        RefreshView();
+        SetStatus($"Line {r.Line} deleted. Use Undo delete to put it back.");
+    }
+
+    private void UndoDelete()
+    {
+        SurveyRecord? restored = doc?.UndoDelete();
+        if (restored is null) return;
+        RefreshView();
+        SetStatus($"Line {restored.Line} restored.");
+    }
+
+    private void BeginEdit(SurveyRecord r, int column)
+    {
+        editRecord = r;
+        editColumn = column;
+        editText = r.Fixed[column];
+        focusEditInput = true;
+    }
+
+    private void OnEditKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") CommitEdit();
+        else if (e.Key == "Escape") editRecord = null;
+    }
+
+    private void CommitEdit()
+    {
+        SurveyRecord? r = editRecord;
+        if (r is null) return; // already finished (Enter or Escape, followed by the box losing focus)
+        editRecord = null;
+
+        if (editText != r.Fixed[editColumn])
+        {
+            doc!.SetFixed(r, editColumn, editText);
+            RefreshView();
+            SetStatus($"Line {r.Line}: {SurveyRecord.FixedColumnNames[editColumn]} changed.");
+        }
+    }
+}
