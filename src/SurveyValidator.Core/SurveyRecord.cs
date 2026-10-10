@@ -5,6 +5,7 @@ public enum RowStatus
     Ok,
     MultipleDistances,
     Incomplete,
+    DeleteRequested,
     TransectError
 }
 
@@ -30,13 +31,40 @@ public sealed class SurveyRecord
     public string[] Fixed { get; } = Enumerable.Repeat("", FixedColumnCount).ToArray();
 
     public string Species { get; internal set; } = "";
-    public string GroupSize { get; internal set; } = "";
+
+    /// <summary>The counts recorded for the group, comma-separated, for example "4,4,2".</summary>
+    public string Counts { get; internal set; } = "";
+
+    /// <summary>Other observations recorded on the line (for example glare), separated by semicolons.</summary>
+    public string Other { get; internal set; } = "";
+
+    /// <summary>The counts added together, or null if there are none or one is not a whole number.</summary>
+    public int? GroupSize
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Counts)) return null;
+            int total = 0;
+            foreach (string part in Counts.Split(','))
+            {
+                if (!int.TryParse(part.Trim(), out int n)) return null;
+                total += n;
+            }
+            return total;
+        }
+    }
+
+    /// <summary>True if the observer asked for this record to be deleted.</summary>
+    public bool DeleteRequested { get; internal set; }
+
+    /// <summary>The recorded value that asked for deletion.</summary>
+    public string DeleteRequestValue { get; internal set; } = "";
     public string Distance { get; internal set; } = "";
 
     /// <summary>Every distance class found on the line, in the order recorded.</summary>
     public IReadOnlyList<string> RecordedDistances { get; internal set; } = Array.Empty<string>();
 
-    /// <summary>Entries after the 11 auto-recorded columns that matched nothing in the template.</summary>
+    /// <summary>Entries after the 11 auto-recorded columns that the config does not list.</summary>
     public IReadOnlyList<string> UnrecognisedEntries { get; internal set; } = Array.Empty<string>();
 
     /// <summary>True while a line with more than one distance class has not had one chosen.</summary>
@@ -58,6 +86,7 @@ public sealed class SurveyRecord
     /// <summary>The single most important issue on the row, used for colouring.</summary>
     public RowStatus Status =>
         TransectError ? RowStatus.TransectError
+        : DeleteRequested ? RowStatus.DeleteRequested
         : !IsComplete ? RowStatus.Incomplete
         : HasMultipleDistances ? RowStatus.MultipleDistances
         : RowStatus.Ok;

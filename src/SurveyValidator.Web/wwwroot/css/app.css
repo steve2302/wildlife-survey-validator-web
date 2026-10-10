@@ -10,6 +10,7 @@
     --multi: #ffffe0;        /* LightYellow: more than one distance */
     --transect: #ffa07a;     /* LightSalmon: transect sequence error */
     --flag: #ffd700;         /* Gold: the cell that needs attention */
+    --delete: #d3d6da;       /* Grey: observer asked for the record to be deleted */
     --row-height: 33px;
 }
 
@@ -26,6 +27,7 @@ body {
 #app { display: flex; flex-direction: column; height: 100vh; }
 
 .loading, .empty { text-align: center; padding: 4rem 1rem; font-size: 1.1rem; }
+.empty { flex: 1; }
 .muted { color: var(--muted); font-size: 0.95rem; }
 
 .visually-hidden {
@@ -50,6 +52,8 @@ body {
 .btn:disabled { color: #9aa3ad; border-color: var(--line); cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: #184c70; }
+.btn.disabled { opacity: 0.5; cursor: default; }
+.config-name { color: var(--muted); font-size: 0.9rem; }
 .btn.quiet { border-color: transparent; color: var(--accent); }
 .btn.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
 .btn:focus-within, .btn:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -67,9 +71,10 @@ body {
 .legend { list-style: none; padding-left: 0 !important; }
 .swatch { display: inline-block; width: 1.6em; height: 1em; border: 1px solid #999; vertical-align: -2px; margin-right: 6px; }
 
-.template-lists { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 8px 0 12px; }
-.template-lists dt { color: var(--muted); }
-.template-lists dd { margin: 0; }
+.config { border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.config th { text-align: left; font-weight: 600; padding: 4px 16px 4px 0; border-bottom: 1px solid #aab3bd; }
+.config td { padding: 3px 16px 3px 0; border-bottom: 1px solid var(--line); }
+.config select { font: inherit; height: 25px; }
 
 /* ---------- summary and filters ---------- */
 
@@ -91,6 +96,7 @@ body {
 .row-incomplete { background: var(--incomplete); }
 .row-multi { background: var(--multi); }
 .row-transect { background: var(--transect); }
+.row-delete { background: var(--delete); }
 
 /* ---------- data grid ---------- */
 
@@ -125,7 +131,10 @@ body {
     font: inherit; color: var(--ink); height: 25px; border: 1px solid #aab3bd; border-radius: 3px;
     background: rgba(255, 255, 255, 0.85); padding: 0 4px; max-width: 100%;
 }
-.grid input.group-size { width: 6.5rem; }
+.grid input.counts-box { width: 6.5rem; }
+.grid input.other-box { width: 11rem; }
+.grid td.calc { color: var(--ink); font-weight: 600; }
+.grid tr.row-delete td.notes { font-weight: 600; }
 .grid td.editing input { width: 100%; min-width: 6rem; }
 
 .pick {

@@ -1,173 +1,292 @@
+using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace SurveyValidator.Core;
 
-/// <summary>Raised when a template file cannot be read.</summary>
+/// <summary>Raised when a config or template file cannot be read.</summary>
 public sealed class TemplateException : Exception
 {
     public TemplateException(string message) : base(message) { }
 }
 
+/// <summary>What a recorded value means when it appears on a line of a survey file.</summary>
+public enum ValueRole
+{
+    Species,
+    Count,
+    Distance,
+    TransectStart,
+    TransectEnd,
+    /// <summary>Any other observation attached to a record, such as glare.</summary>
+    Other,
+    /// <summary>The observer asked for the record to be deleted.</summary>
+    DeleteRequest,
+    /// <summary>Recognised but of no interest; dropped without comment.</summary>
+    Ignore
+}
+
+/// <summary>One recorded value and its meaning.</summary>
+public sealed record TemplateEntry(string Value, ValueRole Role, string Description);
+
 /// <summary>
-/// The lists of values a survey file is checked against: species, distance classes,
-/// group sizes and the two transect markers. Replaces the lists that were hard-coded
-/// in the WinForms version. A template is a small text file, one entry per line, in
-/// the form <c>category,value</c>.
+/// The values a survey file is checked against. Nothing is fixed in the program: the list is
+/// built from the data logger's button config file (Button, AudioText, RecordedData, NewRecord),
+/// so changing that file changes what the cleaner accepts.
 /// </summary>
 public sealed class SurveyTemplate
 {
-    /// <summary>The values built into the original desktop application.</summary>
-    public const string DefaultText =
-        "# Wildlife Survey Validator template\n" +
-        "# One entry per line: category,value\n" +
-        "# Categories: species, distance, group_size, transect_start, transect_end, header_marker\n" +
-        "category,value\n" +
-        "species,red_kangaroo\n" +
-        "species,grey_kangaroo\n" +
-        "species,goat\n" +
-        "distance,yellow(0-50m)\n" +
-        "distance,green(50-100m)\n" +
-        "distance,blue(100-200m)\n" +
-        "distance,black(200-300m)\n" +
-        "group_size,1\n" +
-        "group_size,2\n" +
-        "group_size,3\n" +
-        "group_size,4\n" +
-        "transect_start,break_on\n" +
-        "transect_end,break_off\n" +
-        "header_marker,AM_AM_SML\n";
+    public const string DefaultHeaderMarker = "AM_AM_SML";
+
+    private static readonly Regex NumberRange = new(@"\d+\s*-\s*\d+", RegexOptions.Compiled);
+
+    private readonly Dictionary<string, ValueRole> _roles;
+
+    /// <summary>Every recorded value, in config-file order.</summary>
+    public IReadOnlyList<TemplateEntry> Entries { get; }
 
     public IReadOnlyList<string> Species { get; }
+    public IReadOnlyList<string> Counts { get; }
     public IReadOnlyList<string> DistanceClasses { get; }
-    public IReadOnlyList<string> GroupSizes { get; }
+    public IReadOnlyList<string> OtherValues { get; }
 
-    /// <summary>Marker that opens a transect.</summary>
+    /// <summary>Marker that opens a transect, or an empty string if the config has none.</summary>
     public string TransectStart { get; }
 
-    /// <summary>Marker that closes a transect.</summary>
+    /// <summary>Marker that closes a transect, or an empty string if the config has none.</summary>
     public string TransectEnd { get; }
 
     /// <summary>
-    /// Text that identifies the first line of a file as a header line to skip.
-    /// The first line is a header only if it contains this text and has no comma.
+    /// The first line of a data file is skipped as a header if it has no comma and contains this text.
     /// </summary>
     public string HeaderMarker { get; }
 
-    public SurveyTemplate(
-        IEnumerable<string> species,
-        IEnumerable<string> distanceClasses,
-        IEnumerable<string> groupSizes,
-        string transectStart,
-        string transectEnd,
-        string headerMarker)
+    public SurveyTemplate(IEnumerable<TemplateEntry> entries, string headerMarker = DefaultHeaderMarker)
     {
-        Species = species.Distinct().ToList();
-        DistanceClasses = distanceClasses.Distinct().ToList();
-        GroupSizes = groupSizes.Distinct().ToList();
-        TransectStart = transectStart;
-        TransectEnd = transectEnd;
-        HeaderMarker = headerMarker;
+        var list = new List<TemplateEntry>();
+        _roles = new Dictionary<string, ValueRole>();
+        foreach (TemplateEntry e in entries)
+        {
+            if (_roles.ContainsKey(e.Value)) continue; // the same value on two buttons counts once
+            _roles[e.Value] = e.Role;
+            list.Add(e);
+        }
+
+        Entries = list;
+        Species = ValuesWith(ValueRole.Species);
+        Counts = ValuesWith(ValueRole.Count);
+        DistanceClasses = ValuesWith(ValueRole.Distance);
+        OtherValues = ValuesWith(ValueRole.Other);
+        TransectStart = ValuesWith(ValueRole.TransectStart).FirstOrDefault() ?? "";
+        TransectEnd = ValuesWith(ValueRole.TransectEnd).FirstOrDefault() ?? "";
+        HeaderMarker = string.IsNullOrWhiteSpace(headerMarker) ? DefaultHeaderMarker : headerMarker;
     }
 
-    public static SurveyTemplate Default { get; } = Parse(DefaultText);
+    private List<string> ValuesWith(ValueRole role) =>
+        Entries.Where(e => e.Role == role).Select(e => e.Value).ToList();
 
-    public bool IsSpecies(string value) => Species.Contains(value);
-    public bool IsDistanceClass(string value) => DistanceClasses.Contains(value);
-    public bool IsGroupSize(string value) => GroupSizes.Contains(value);
-    public bool IsTransectMarker(string value) => value == TransectStart || value == TransectEnd;
+    /// <summary>The meaning of a recorded value, or null if the config does not list it.</summary>
+    public ValueRole? RoleOf(string value) => _roles.TryGetValue(value, out ValueRole role) ? role : null;
 
-    /// <summary>The same template with the meaning of the two transect markers exchanged.</summary>
-    public SurveyTemplate WithTransectMarkersSwapped() =>
-        new(Species, DistanceClasses, GroupSizes, TransectEnd, TransectStart, HeaderMarker);
+    public bool IsSpecies(string value) => RoleOf(value) == ValueRole.Species;
+    public bool IsDistanceClass(string value) => RoleOf(value) == ValueRole.Distance;
+    public bool IsCount(string value) => RoleOf(value) == ValueRole.Count;
+    public bool IsOther(string value) => RoleOf(value) == ValueRole.Other;
+    public bool IsTransectMarker(string value) =>
+        value.Length > 0 && (value == TransectStart || value == TransectEnd);
 
-    /// <summary>Reads a template from text. Throws <see cref="TemplateException"/> if it is not usable.</summary>
+    /// <summary>Problems that stop the template being useful, or an empty list.</summary>
+    public IReadOnlyList<string> Problems()
+    {
+        var problems = new List<string>();
+        if (Species.Count == 0) problems.Add("no species");
+        if (Counts.Count == 0) problems.Add("no counts");
+        if (DistanceClasses.Count == 0) problems.Add("no distance classes");
+        return problems;
+    }
+
+    /// <summary>
+    /// The same template with one value given a different meaning. There is one start marker and
+    /// one end marker, so a value that held the new role takes over the changed value's old role.
+    /// </summary>
+    public SurveyTemplate WithRole(string value, ValueRole newRole)
+    {
+        ValueRole? oldRole = RoleOf(value);
+        if (oldRole is null || oldRole == newRole) return this;
+        bool single = newRole is ValueRole.TransectStart or ValueRole.TransectEnd;
+
+        return new SurveyTemplate(Entries.Select(e =>
+            e.Value == value ? e with { Role = newRole }
+            : single && e.Role == newRole
+                ? e with { Role = oldRole is ValueRole.TransectStart or ValueRole.TransectEnd ? oldRole.Value : ValueRole.Other }
+                : e), HeaderMarker);
+    }
+
+    // ------------------------------------------------------------------ reading
+
+    /// <summary>
+    /// Reads either the data logger's button config file or a template saved by this program.
+    /// Throws <see cref="TemplateException"/> if the text is neither.
+    /// </summary>
     public static SurveyTemplate Parse(string text)
     {
-        var species = new List<string>();
-        var distances = new List<string>();
-        var groupSizes = new List<string>();
-        string? transectStart = null;
-        string? transectEnd = null;
-        string? headerMarker = null;
-
-        using var reader = new StringReader(text ?? "");
-        string? line;
-        int lineNumber = 0;
-        while ((line = reader.ReadLine()) != null)
+        var lines = new List<(int Number, string Text)>();
+        using (var reader = new StringReader(text ?? ""))
         {
-            lineNumber++;
-            string trimmed = line.Trim().TrimStart('﻿');
-            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
-                continue;
-
-            int comma = trimmed.IndexOf(',');
-            if (comma < 0)
-                throw new TemplateException($"Template line {lineNumber}: expected 'category,value' but found '{trimmed}'.");
-
-            string category = trimmed[..comma].Trim().ToLowerInvariant();
-            string value = Unquote(trimmed[(comma + 1)..].Trim());
-
-            if (category == "category" && value.ToLowerInvariant() == "value")
-                continue; // optional column heading row
-
-            if (value.Length == 0)
-                throw new TemplateException($"Template line {lineNumber}: '{category}' has no value.");
-
-            switch (category)
+            string? line;
+            int n = 0;
+            while ((line = reader.ReadLine()) != null)
             {
-                case "species": species.Add(value); break;
-                case "distance": distances.Add(value); break;
-                case "group_size": groupSizes.Add(value); break;
-                case "transect_start": transectStart = value; break;
-                case "transect_end": transectEnd = value; break;
-                case "header_marker": headerMarker = value; break;
-                default:
-                    throw new TemplateException(
-                        $"Template line {lineNumber}: unknown category '{category}'. " +
-                        "Use species, distance, group_size, transect_start, transect_end or header_marker.");
+                n++;
+                string trimmed = line.Trim().TrimStart('﻿');
+                if (trimmed.Length > 0 && !trimmed.StartsWith('#'))
+                    lines.Add((n, trimmed));
             }
         }
 
-        if (species.Count == 0) throw new TemplateException("The template lists no species.");
-        if (distances.Count == 0) throw new TemplateException("The template lists no distance classes.");
-        if (groupSizes.Count == 0) throw new TemplateException("The template lists no group sizes.");
+        if (lines.Count == 0)
+            throw new TemplateException("The file is empty.");
 
-        transectStart ??= Default.TransectStart;
-        transectEnd ??= Default.TransectEnd;
-        if (transectStart == transectEnd)
-            throw new TemplateException("transect_start and transect_end must be different.");
+        List<string> header = SplitCsv(lines[0].Text).Select(h => h.Trim().ToLowerInvariant()).ToList();
+        SurveyTemplate template = header.Contains("recordeddata")
+            ? ParseLoggerConfig(header, lines.Skip(1))
+            : ParseSavedTemplate(lines);
 
-        foreach (string g in groupSizes)
-        {
-            if (g.Contains(','))
-                throw new TemplateException($"Group size '{g}' must not contain a comma.");
-        }
-
-        return new SurveyTemplate(species, distances, groupSizes, transectStart, transectEnd,
-            headerMarker ?? Default.HeaderMarker);
+        IReadOnlyList<string> problems = template.Problems();
+        if (problems.Count > 0)
+            throw new TemplateException("The file lists " + string.Join(", ", problems) + ".");
+        return template;
     }
 
-    /// <summary>Writes the template in the format <see cref="Parse"/> reads.</summary>
+    /// <summary>
+    /// The logger's config: one row per gamepad button. The meaning of each recorded value is
+    /// worked out from the row (see <see cref="InferRole"/>).
+    /// </summary>
+    private static SurveyTemplate ParseLoggerConfig(List<string> header, IEnumerable<(int Number, string Text)> rows)
+    {
+        int valueColumn = header.IndexOf("recordeddata");
+        int buttonColumn = header.IndexOf("button");
+        int audioColumn = header.IndexOf("audiotext");
+        int newRecordColumn = header.IndexOf("newrecord");
+
+        var entries = new List<TemplateEntry>();
+        foreach (var (number, text) in rows)
+        {
+            List<string> fields = SplitCsv(text);
+            string Field(int column) => column >= 0 && column < fields.Count ? fields[column].Trim() : "";
+
+            string value = Field(valueColumn);
+            if (value.Length == 0 || value.Equals("NA", StringComparison.OrdinalIgnoreCase))
+                continue; // button not configured
+
+            if (value.Contains(','))
+                throw new TemplateException($"Config line {number}: the recorded value '{value}' must not contain a comma.");
+
+            bool newRecord = Field(newRecordColumn).Equals("yes", StringComparison.OrdinalIgnoreCase);
+            entries.Add(new TemplateEntry(value, InferRole(Field(buttonColumn), value, newRecord), Field(audioColumn)));
+        }
+
+        return new SurveyTemplate(entries);
+    }
+
+    /// <summary>
+    /// Works out what a config row's recorded value means:
+    /// the Start button's two states are the transect markers; a whole number is a count;
+    /// any other value that starts a new record is a species; a value containing a number
+    /// range such as 100-200 is a distance class; a value starting with "delete" is a delete
+    /// request; anything else is another observation.
+    /// </summary>
+    public static ValueRole InferRole(string button, string value, bool startsNewRecord)
+    {
+        if (button.Equals("Start_On", StringComparison.OrdinalIgnoreCase)) return ValueRole.TransectStart;
+        if (button.Equals("Start_Off", StringComparison.OrdinalIgnoreCase)) return ValueRole.TransectEnd;
+        if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out _)) return ValueRole.Count;
+        if (startsNewRecord) return ValueRole.Species;
+        if (NumberRange.IsMatch(value)) return ValueRole.Distance;
+        if (value.StartsWith("delete", StringComparison.OrdinalIgnoreCase)) return ValueRole.DeleteRequest;
+        return ValueRole.Other;
+    }
+
+    private static readonly (string Name, ValueRole Role)[] RoleNames =
+    {
+        ("species", ValueRole.Species),
+        ("count", ValueRole.Count),
+        ("distance", ValueRole.Distance),
+        ("transect_start", ValueRole.TransectStart),
+        ("transect_end", ValueRole.TransectEnd),
+        ("other", ValueRole.Other),
+        ("delete_request", ValueRole.DeleteRequest),
+        ("ignore", ValueRole.Ignore),
+    };
+
+    /// <summary>A template saved by this program: one <c>role,value</c> entry per line.</summary>
+    private static SurveyTemplate ParseSavedTemplate(List<(int Number, string Text)> lines)
+    {
+        var entries = new List<TemplateEntry>();
+        string headerMarker = DefaultHeaderMarker;
+
+        foreach (var (number, text) in lines)
+        {
+            List<string> fields = SplitCsv(text);
+            if (fields.Count < 2)
+                throw new TemplateException(
+                    $"Line {number}: expected the logger's config file (with a RecordedData column) or 'role,value' lines, but found '{text}'.");
+
+            string roleName = fields[0].Trim().ToLowerInvariant();
+            string value = fields[1].Trim();
+            if (roleName == "role" && value.ToLowerInvariant() == "value")
+                continue; // column heading row
+            if (value.Length == 0)
+                throw new TemplateException($"Line {number}: '{roleName}' has no value.");
+
+            if (roleName == "header_marker")
+            {
+                headerMarker = value;
+                continue;
+            }
+
+            int index = Array.FindIndex(RoleNames, r => r.Name == roleName);
+            if (index < 0)
+                throw new TemplateException(
+                    $"Line {number}: unknown role '{roleName}'. Use " + string.Join(", ", RoleNames.Select(r => r.Name)) + " or header_marker.");
+            if (value.Contains(','))
+                throw new TemplateException($"Line {number}: the value '{value}' must not contain a comma.");
+
+            entries.Add(new TemplateEntry(value, RoleNames[index].Role, fields.Count > 2 ? fields[2].Trim() : ""));
+        }
+
+        return new SurveyTemplate(entries, headerMarker);
+    }
+
+    /// <summary>Writes the template, with the meaning of every value stated, in a form <see cref="Parse"/> reads.</summary>
     public string ToText()
     {
         var sb = new StringBuilder();
         sb.Append("# Wildlife Survey Validator template\n");
-        sb.Append("# One entry per line: category,value\n");
-        sb.Append("# Categories: species, distance, group_size, transect_start, transect_end, header_marker\n");
-        sb.Append("category,value\n");
-        foreach (string s in Species) sb.Append("species,").Append(s).Append('\n');
-        foreach (string d in DistanceClasses) sb.Append("distance,").Append(d).Append('\n');
-        foreach (string g in GroupSizes) sb.Append("group_size,").Append(g).Append('\n');
-        sb.Append("transect_start,").Append(TransectStart).Append('\n');
-        sb.Append("transect_end,").Append(TransectEnd).Append('\n');
-        sb.Append("header_marker,").Append(HeaderMarker).Append('\n');
+        sb.Append("# One entry per line: role,value,description\n");
+        sb.Append("# Roles: ").Append(string.Join(", ", RoleNames.Select(r => r.Name))).Append(", header_marker\n");
+        sb.Append("role,value,description\n");
+        foreach (TemplateEntry e in Entries)
+        {
+            sb.Append(RoleNames.First(r => r.Role == e.Role).Name).Append(',')
+              .Append(e.Value).Append(',')
+              .Append(SurveyDocument.FormatCsvField(e.Description)).Append('\n');
+        }
+        sb.Append("header_marker,").Append(HeaderMarker).Append(",\n");
         return sb.ToString();
     }
 
-    private static string Unquote(string value)
+    public static string RoleLabel(ValueRole role) => role switch
     {
-        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
-            return value[1..^1].Replace("\"\"", "\"").Trim();
-        return value;
-    }
+        ValueRole.Species => "Species",
+        ValueRole.Count => "Count",
+        ValueRole.Distance => "Distance class",
+        ValueRole.TransectStart => "Transect start",
+        ValueRole.TransectEnd => "Transect end",
+        ValueRole.Other => "Other observation",
+        ValueRole.DeleteRequest => "Delete request",
+        _ => "Ignore"
+    };
+
+    private static List<string> SplitCsv(string line) => SurveyDocument.ParseCsvLine(line);
 }

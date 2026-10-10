@@ -9,11 +9,12 @@ public sealed record SurveySummary(
     int Incomplete,
     int MultipleDistances,
     int TransectErrors,
+    int DeleteRequests,
     int TransectStartCount,
     int TransectEndCount)
 {
     public bool TransectMarkersMatch => TransectStartCount == TransectEndCount;
-    public int NeedingAttention => Incomplete + MultipleDistances + TransectErrors;
+    public int NeedingAttention => Incomplete + MultipleDistances + TransectErrors + DeleteRequests;
 }
 
 /// <summary>
@@ -22,8 +23,13 @@ public sealed record SurveySummary(
 /// </summary>
 public sealed class SurveyDocument
 {
-    public const string CsvHeader =
-        "Time,TimeOfDay,ObserverID,ObserverPosition,UTC,Latitude,Longitude,Bearing,Altitude,VTOL,HTOL,Species,GroupSize,Distance";
+    /// <summary>
+    /// Column headings of the cleaned file. An "Other" column is added only when the config
+    /// lists other observations.
+    /// </summary>
+    public string CsvHeader =>
+        string.Join(",", SurveyRecord.FixedColumnNames) + ",Species,Counts,GroupSize,Distance" +
+        (Template.OtherValues.Count > 0 ? ",Other" : "");
 
     private readonly List<SurveyRecord> _records = new();
     private readonly Stack<(int Index, SurveyRecord Record)> _deleted = new();
@@ -39,7 +45,7 @@ public sealed class SurveyDocument
 
     public int DeletedCount => _deleted.Count;
 
-    public SurveySummary Summary { get; private set; } = new(0, 0, 0, 0, 0, 0, 0);
+    public SurveySummary Summary { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, 0);
 
     private SurveyDocument(SurveyTemplate template) => Template = template;
 
@@ -100,21 +106,32 @@ public sealed class SurveyDocument
 
         string species = "";
         var distances = new List<string>();
-        var groupSizes = new List<string>();
+        var counts = new List<string>();
+        var others = new List<string>();
         var unrecognised = new List<string>();
 
         for (int i = SurveyRecord.FixedColumnCount; i < fields.Count; i++)
         {
             string field = fields[i].Trim();
-            if (Template.IsSpecies(field)) species = field;
-            else if (Template.IsDistanceClass(field)) distances.Add(field);
-            else if (Template.IsGroupSize(field)) groupSizes.Add(field);
-            else if (field.Length > 0) unrecognised.Add(field);
+            switch (Template.RoleOf(field))
+            {
+                case ValueRole.Species: species = field; break;
+                case ValueRole.Distance: distances.Add(field); break;
+                case ValueRole.Count: counts.Add(field); break;
+                case ValueRole.Other: if (!others.Contains(field)) others.Add(field); break;
+                case ValueRole.DeleteRequest:
+                    record.DeleteRequested = true;
+                    record.DeleteRequestValue = field;
+                    break;
+                case ValueRole.Ignore: break;
+                default: if (field.Length > 0) unrecognised.Add(field); break;
+            }
         }
 
         record.Species = species;
         record.Distance = distances.Count > 0 ? distances[0] : "";
-        record.GroupSize = string.Join(",", groupSizes);
+        record.Counts = string.Join(",", counts);
+        record.Other = string.Join(";", others);
         record.RecordedDistances = distances;
         record.UnrecognisedEntries = unrecognised;
         record.HasMultipleDistances = distances.Count > 1;
@@ -169,7 +186,7 @@ public sealed class SurveyDocument
             {
                 if (string.IsNullOrWhiteSpace(r.Species)) missing.Add("species");
                 if (string.IsNullOrWhiteSpace(r.Distance)) missing.Add("distance");
-                if (string.IsNullOrWhiteSpace(r.GroupSize)) missing.Add("group size");
+                if (string.IsNullOrWhiteSpace(r.Counts)) missing.Add("count");
             }
             r.MissingFields = missing;
             r.IsComplete = missing.Count == 0;
@@ -213,23 +230,28 @@ public sealed class SurveyDocument
                 $"Transect error: '{Template.TransectStart}' without matching '{Template.TransectEnd}'";
         }
 
-        int incomplete = 0, multiple = 0, transectErrors = 0;
+        int incomplete = 0, multiple = 0, transectErrors = 0, deleteRequests = 0;
         foreach (SurveyRecord r in _records)
         {
             r.Notes = BuildNotes(r, transectMessages);
             if (!r.IsComplete) incomplete++;
             if (r.HasMultipleDistances) multiple++;
             if (r.TransectError) transectErrors++;
+            if (r.DeleteRequested) deleteRequests++;
         }
 
         Summary = new SurveySummary(
-            _records.Count, _records.Count - incomplete, incomplete, multiple, transectErrors, startCount, endCount);
+            _records.Count, _records.Count - incomplete, incomplete, multiple, transectErrors, deleteRequests,
+            startCount, endCount);
     }
 
     private static string BuildNotes(SurveyRecord r, Dictionary<SurveyRecord, string> transectMessages)
     {
         if (r.IsTransectMarker)
             return r.TransectError ? transectMessages[r] : $"Transect marker: {r.Species.Trim()}";
+
+        if (r.DeleteRequested)
+            return $"Marked for deletion by the observer ({r.DeleteRequestValue})";
 
         if (!r.IsComplete)
         {
@@ -281,27 +303,58 @@ public sealed class SurveyDocument
         return null;
     }
 
-    public string? SetGroupSize(SurveyRecord record, string? value)
+    public string? SetCounts(SurveyRecord record, string? value)
     {
         value = (value ?? "").Trim();
         if (value.Length > 0)
         {
-            string[] sizes = value.Split(',').Select(size => size.Trim()).ToArray();
-            foreach (string size in sizes)
+            string[] counts = value.Split(',').Select(c => c.Trim()).ToArray();
+            foreach (string count in counts)
             {
-                if (!Template.IsGroupSize(size))
+                if (!Template.IsCount(count))
                 {
-                    return "Invalid group size. Valid values are: " + string.Join(", ", Template.GroupSizes) +
-                           " (comma-separated for multiple)";
+                    return "Invalid count. Valid values are: " + string.Join(", ", Template.Counts) +
+                           " (comma-separated for several)";
                 }
             }
 
-            value = string.Join(",", sizes); // stored without spaces, the same as when read from a file
+            value = string.Join(",", counts); // stored without spaces, the same as when read from a file
         }
 
-        record.GroupSize = value;
+        record.Counts = value;
         Changed();
         return null;
+    }
+
+    /// <summary>Sets the other observations on a record, separated by semicolons.</summary>
+    public string? SetOther(SurveyRecord record, string? value)
+    {
+        value = (value ?? "").Trim();
+        if (value.Length > 0)
+        {
+            string[] others = value.Split(';').Select(o => o.Trim()).Where(o => o.Length > 0).Distinct().ToArray();
+            foreach (string other in others)
+            {
+                if (!Template.IsOther(other))
+                {
+                    return "Invalid entry. Valid values are: " + string.Join(", ", Template.OtherValues) +
+                           " (separate several with a semicolon)";
+                }
+            }
+
+            value = string.Join(";", others);
+        }
+
+        record.Other = value;
+        Changed();
+        return null;
+    }
+
+    /// <summary>Clears the observer's delete request so the record is kept.</summary>
+    public void KeepRecord(SurveyRecord record)
+    {
+        record.DeleteRequested = false;
+        Changed();
     }
 
     /// <summary>Edits one of the 11 auto-recorded values. Any text is accepted.</summary>
@@ -343,7 +396,8 @@ public sealed class SurveyDocument
 
     /// <summary>
     /// The cleaned file as CSV text: a header row, then one line per record with the 11
-    /// auto-recorded columns followed by species, group size and distance. Lines end with CR LF.
+    /// auto-recorded columns followed by species, counts, group size (the counts added together),
+    /// distance and, if the config has any, other observations. Lines end with CR LF.
     /// </summary>
     public string ToCsv()
     {
@@ -352,7 +406,7 @@ public sealed class SurveyDocument
 
         foreach (SurveyRecord r in _records)
         {
-            var fields = new List<string>(SurveyRecord.FixedColumnCount + 3);
+            var fields = new List<string>(SurveyRecord.FixedColumnCount + 5);
             foreach (string f in r.Fixed)
                 fields.Add(FormatCsvField(f));
 
@@ -361,12 +415,17 @@ public sealed class SurveyDocument
             {
                 fields.Add("");
                 fields.Add("");
+                fields.Add("");
             }
             else
             {
-                fields.Add(FormatCsvField(r.GroupSize));
+                fields.Add(FormatCsvField(r.Counts));
+                fields.Add(r.GroupSize?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "");
                 fields.Add(FormatCsvField(r.Distance));
             }
+
+            if (Template.OtherValues.Count > 0)
+                fields.Add(FormatCsvField(r.Other));
 
             sb.Append(string.Join(",", fields)).Append("\r\n");
         }

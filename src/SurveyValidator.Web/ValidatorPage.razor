@@ -1,11 +1,13 @@
 @inject IJSRuntime JS
+@inject HttpClient Http
 
 <header class="app-header">
     <h1>Wildlife Survey Data Validator</h1>
     <div class="toolbar">
-        <label class="btn primary" title="Open a survey data file (.dat or .csv) from this computer">
+        <label class="btn primary @(template is null ? "disabled" : null)" title="Open a survey data file (.dat or .csv) from this computer">
             Open data file
-            <InputFile @key="fileInputKey" class="visually-hidden" OnChange="OnDataFileChosen" accept=".dat,.csv,.txt" />
+            <InputFile @key="fileInputKey" class="visually-hidden" OnChange="OnDataFileChosen" accept=".dat,.csv,.txt"
+                       disabled="@(template is null)" />
         </label>
         <button class="btn" disabled="@(doc is null)" @onclick="DownloadCsv"
                 title="Save the cleaned data to this computer as a CSV file">
@@ -15,7 +17,8 @@
             Undo delete@(doc is { DeletedCount: > 0 } ? $" ({doc.DeletedCount})" : "")
         </button>
         <span class="spacer"></span>
-        <button class="btn quiet" aria-expanded="@showTemplate" @onclick="() => showTemplate = !showTemplate">Template</button>
+        <span class="config-name" title="The config file the data is checked against">Config: @templateName</span>
+        <button class="btn quiet" aria-expanded="@showConfig" @onclick="() => showConfig = !showConfig">Config</button>
         <button class="btn quiet" aria-expanded="@showHelp" @onclick="() => showHelp = !showHelp">Help</button>
     </div>
 </header>
@@ -38,70 +41,104 @@
             highlighted lines, then download the result as a CSV file. The file is read and cleaned in this browser;
             it is not sent anywhere.
         </p>
-        <p>Each record needs three entries, as listed in the current template:</p>
-        <ul>
-            <li>Species: @string.Join(", ", template.Species)</li>
-            <li>Distance class (one only): @string.Join(", ", template.DistanceClasses)</li>
-            <li>Group size (one or more, comma-separated): @string.Join(", ", template.GroupSizes)</li>
-        </ul>
         <p>
-            Transect markers (<code>@template.TransectStart</code> opens a transect, <code>@template.TransectEnd</code>
-            closes it) are kept and checked for correct order.
+            What counts as a valid entry comes from the data logger's button config file
+            (<code>GamepadAudioConfig.csv</code>). Load a different config in the Config panel and the checks,
+            the lists and the saved columns change to match.
         </p>
+        @if (template is not null)
+        {
+            <p>Each record needs three entries:</p>
+            <ul>
+                <li>Species: @string.Join(", ", template.Species)</li>
+                <li>Distance class (one only): @string.Join(", ", template.DistanceClasses)</li>
+                <li>Count (one or more, comma-separated): @string.Join(", ", template.Counts)</li>
+            </ul>
+            <p>
+                <b>GroupSize</b> is calculated by the program: it is the counts added together, so counts of
+                4, 4 and 2 give a group size of 10.
+            </p>
+        }
         <ul class="legend">
             <li><span class="swatch row-incomplete"></span> Record with a missing entry (the empty cell is marked in gold)</li>
             <li><span class="swatch row-multi"></span> Record with more than one distance class: choose one</li>
             <li><span class="swatch row-transect"></span> Transect marker out of sequence</li>
+            <li><span class="swatch row-delete"></span> Record the observer marked for deletion: delete it or keep it</li>
         </ul>
         <p>
-            Species and distance are chosen from lists. Group size is typed. The 11 auto-recorded columns
+            Species and distance are chosen from lists. Counts are typed. The 11 auto-recorded columns
             (time to HTOL) are shown to the right: double-click one to edit it, then press Enter to keep the
             change or Escape to abandon it. The downloaded file keeps the original column order.
         </p>
     </section>
 }
 
-@if (showTemplate)
+@if (showConfig)
 {
     <section class="panel">
-        <h2>Template <small>(@templateName)</small></h2>
+        <h2>Config <small>(@templateName)</small></h2>
         <p>
-            The template lists the values a data file is checked against. Load your own to check a survey that
-            used different species, distance classes or group sizes. It is remembered in this browser.
+            The values below were read from the config file. The program works out what each recorded value
+            means from its row. If one is wrong, change it here; the choice is remembered in this browser.
         </p>
-        <dl class="template-lists">
-            <dt>Species</dt><dd>@string.Join(", ", template.Species)</dd>
-            <dt>Distance classes</dt><dd>@string.Join(", ", template.DistanceClasses)</dd>
-            <dt>Group sizes</dt><dd>@string.Join(", ", template.GroupSizes)</dd>
-            <dt>Transect opens with</dt><dd><code>@template.TransectStart</code></dd>
-            <dt>Transect closes with</dt><dd><code>@template.TransectEnd</code></dd>
-            <dt>Header line contains</dt><dd><code>@template.HeaderMarker</code></dd>
-        </dl>
         <div class="toolbar">
             <label class="btn">
-                Load template file
-                <InputFile @key="templateInputKey" class="visually-hidden" OnChange="OnTemplateFileChosen" accept=".csv,.txt" />
+                Load config file
+                <InputFile @key="templateInputKey" class="visually-hidden" OnChange="OnConfigFileChosen" accept=".csv,.txt" />
             </label>
-            <button class="btn" @onclick="DownloadTemplate">Download this template</button>
-            <button class="btn" @onclick="SwapTransectMarkers"
-                    title="Exchange which marker opens a transect and which closes it">
-                Swap transect markers
+            <button class="btn" disabled="@(template is null)" @onclick="DownloadTemplate"
+                    title="Save these values and their meanings as a file that can be loaded again">
+                Download as template
             </button>
-            <button class="btn" @onclick="ResetTemplate">Reset to built-in</button>
+            <button class="btn" @onclick="ResetConfig">Reset to built-in config</button>
         </div>
+        @if (template is not null)
+        {
+            <table class="config">
+                <thead>
+                    <tr><th>Recorded value</th><th>Spoken as</th><th>Meaning</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (TemplateEntry entry in template.Entries)
+                    {
+                        TemplateEntry e = entry;
+                        <tr @key="e.Value">
+                            <td><code>@e.Value</code></td>
+                            <td>@e.Description</td>
+                            <td>
+                                <select value="@e.Role" aria-label="Meaning of @e.Value" @onchange="ev => OnRoleChanged(e, ev)">
+                                    @foreach (ValueRole role in Enum.GetValues<ValueRole>())
+                                    {
+                                        <option value="@role">@SurveyTemplate.RoleLabel(role)</option>
+                                    }
+                                </select>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
     </section>
 }
 
-@if (doc is null)
+@if (doc is null || template is null)
 {
     <section class="empty">
-        <p>Open a survey data file to begin.</p>
-        <p class="muted">The file stays on this computer. Nothing is uploaded.</p>
+        @if (template is null)
+        {
+            <p>@(configLoading ? "Loading the config…" : "No config is loaded. Open the Config panel and load the logger's config file.")</p>
+        }
+        else
+        {
+            <p>Open a survey data file to begin.</p>
+            <p class="muted">The file stays on this computer. Nothing is uploaded.</p>
+        }
     </section>
 }
 else
 {
     SurveySummary s = doc.Summary;
+    bool showOther = template.OtherValues.Count > 0;
     <section class="summary">
         <div class="filters" role="group" aria-label="Show rows">
             <button class="chip" aria-pressed="@(filter == RowFilter.All)" @onclick="() => SetFilter(RowFilter.All)">
@@ -116,11 +153,19 @@ else
             <button class="chip row-transect" aria-pressed="@(filter == RowFilter.TransectErrors)" @onclick="() => SetFilter(RowFilter.TransectErrors)">
                 Transect errors <b>@s.TransectErrors</b>
             </button>
+            <button class="chip row-delete" aria-pressed="@(filter == RowFilter.DeleteRequests)" @onclick="() => SetFilter(RowFilter.DeleteRequests)">
+                Marked for deletion <b>@s.DeleteRequests</b>
+            </button>
         </div>
         <span class="counts">
-            @s.Complete complete &middot;
-            @template.TransectStart: @s.TransectStartCount, @template.TransectEnd: @s.TransectEndCount
-            <b class="@(s.TransectMarkersMatch ? "good" : "bad")">@(s.TransectMarkersMatch ? "matched" : "MISMATCH")</b>
+            @s.Complete complete
+            @if (template.TransectStart.Length > 0 || template.TransectEnd.Length > 0)
+            {
+                <text>
+                    &middot; @template.TransectStart: @s.TransectStartCount, @template.TransectEnd: @s.TransectEndCount
+                    <b class="@(s.TransectMarkersMatch ? "good" : "bad")">@(s.TransectMarkersMatch ? "matched" : "MISMATCH")</b>
+                </text>
+            }
         </span>
         <label class="toggle">
             <input type="checkbox" @bind="hideFixed" /> Hide the 11 auto-recorded columns
@@ -134,9 +179,14 @@ else
                     <th></th>
                     <th class="num">Line</th>
                     <th>Species</th>
-                    <th>GroupSize</th>
+                    <th>Counts</th>
+                    <th class="num" title="Calculated: the counts added together">GroupSize</th>
                     <th>Distance</th>
                     <th>Recorded distances</th>
+                    @if (showOther)
+                    {
+                        <th>Other</th>
+                    }
                     <th>Notes</th>
                     @if (!hideFixed)
                     {
@@ -161,17 +211,24 @@ else
                                 {
                                     <option value="@sp">@sp</option>
                                 }
-                                <option value="@template.TransectStart">@template.TransectStart</option>
-                                <option value="@template.TransectEnd">@template.TransectEnd</option>
+                                @if (template.TransectStart.Length > 0)
+                                {
+                                    <option value="@template.TransectStart">@template.TransectStart</option>
+                                }
+                                @if (template.TransectEnd.Length > 0)
+                                {
+                                    <option value="@template.TransectEnd">@template.TransectEnd</option>
+                                }
                             </select>
                         </td>
-                        <td class="@(r.IsMissing("group size") ? "flag" : null)">
+                        <td class="@(r.IsMissing("count") ? "flag" : null)">
                             @if (!r.IsTransectMarker)
                             {
-                                <input @key="(r, inputEpoch)" class="group-size" value="@r.GroupSize" aria-label="Group size"
-                                       @onchange="e => OnGroupSize(r, e)" />
+                                <input @key="(r, inputEpoch)" class="counts-box" value="@r.Counts" aria-label="Counts"
+                                       @onchange="e => OnCounts(r, e)" />
                             }
                         </td>
+                        <td class="num calc">@(r.IsTransectMarker ? null : r.GroupSize)</td>
                         <td class="@(r.IsMissing("distance") || r.HasMultipleDistances ? "flag" : null)">
                             @if (!r.IsTransectMarker)
                             {
@@ -198,7 +255,23 @@ else
                                 @r.AllDistancesText
                             }
                         </td>
-                        <td class="notes" title="@r.Notes">@r.Notes</td>
+                        @if (showOther)
+                        {
+                            <td>
+                                @if (!r.IsTransectMarker)
+                                {
+                                    <input @key="(r, inputEpoch, 1)" class="other-box" value="@r.Other" aria-label="Other observations"
+                                           title="Separate several with a semicolon" @onchange="e => OnOther(r, e)" />
+                                }
+                            </td>
+                        }
+                        <td class="notes" title="@r.Notes">
+                            @if (r.DeleteRequested)
+                            {
+                                <button class="pick" title="Keep this record and clear the mark" @onclick="() => KeepRow(r)">Keep</button>
+                            }
+                            @r.Notes
+                        </td>
                         @if (!hideFixed)
                         {
                             @for (int i = 0; i < SurveyRecord.FixedColumnCount; i++)
@@ -233,16 +306,18 @@ else
 <footer class="status @(statusIsError ? "error" : null)" role="status">@status</footer>
 
 @code {
-    private enum RowFilter { All, Incomplete, MultipleDistances, TransectErrors }
+    private enum RowFilter { All, Incomplete, MultipleDistances, TransectErrors, DeleteRequests }
 
     private const long MaxDataFileBytes = 100 * 1024 * 1024;
-    private const long MaxTemplateFileBytes = 1024 * 1024;
+    private const long MaxConfigFileBytes = 1024 * 1024;
+    private const string BuiltInConfigPath = "config/GamepadAudioConfig.csv";
+    private const string BuiltInName = "GamepadAudioConfig.csv (built-in)";
     private const string StoredTemplateKey = "wildlifeSurveyValidator.template";
     private const string StoredTemplateNameKey = "wildlifeSurveyValidator.templateName";
-    private const string BuiltInName = "built-in";
 
-    private SurveyTemplate template = SurveyTemplate.Default;
-    private string templateName = BuiltInName;
+    private SurveyTemplate? template;
+    private string templateName = "none";
+    private bool configLoading = true;
 
     private SurveyDocument? doc;
     private string? fileName;
@@ -251,7 +326,7 @@ else
     private List<SurveyRecord> view = new();
     private RowFilter filter = RowFilter.All;
     private bool hideFixed;
-    private bool showTemplate;
+    private bool showConfig;
     private bool showHelp;
 
     private string status = "Ready";
@@ -280,7 +355,8 @@ else
     {
         if (firstRender)
         {
-            await LoadStoredTemplate();
+            await LoadStartupConfig();
+            StateHasChanged();
         }
 
         if (focusEditInput)
@@ -330,6 +406,7 @@ else
 
     private void LoadData(string text, string name)
     {
+        if (template is null) return;
         rawText = text;
         fileName = name;
         doc = SurveyDocument.Load(text, template);
@@ -338,9 +415,13 @@ else
         RefreshView();
 
         SurveySummary s = doc.Summary;
-        SetStatus($"File loaded: {name}. {s.Total} records, {s.Incomplete} incomplete, " +
-                  $"{s.MultipleDistances} with multiple distances, {s.TransectErrors} transect errors." +
-                  (doc.HadHeaderLine ? " Header line skipped." : ""));
+        string message = $"File loaded: {name}. {s.Total} records, {s.Incomplete} incomplete, " +
+                         $"{s.MultipleDistances} with multiple distances, {s.TransectErrors} transect errors, " +
+                         $"{s.DeleteRequests} marked for deletion." + (doc.HadHeaderLine ? " Header line skipped." : "");
+        bool mismatch = s.Total >= 4 && s.Incomplete * 2 > s.Total;
+        SetStatus(mismatch
+            ? message + " More than half the records are incomplete: check that the right config is loaded."
+            : message, isError: mismatch);
     }
 
     private async Task DownloadCsv()
@@ -353,8 +434,9 @@ else
         SurveySummary s = doc.Summary;
         SetStatus(s.NeedingAttention == 0
             ? $"File saved: {name}"
-            : $"File saved: {name}. Note: {s.Incomplete} incomplete, {s.MultipleDistances} multiple-distance and " +
-              $"{s.TransectErrors} transect-error rows were still flagged.");
+            : $"File saved: {name}. Note: {s.NeedingAttention} flagged rows were saved as they are " +
+              $"({s.Incomplete} incomplete, {s.MultipleDistances} multiple distances, {s.TransectErrors} transect errors, " +
+              $"{s.DeleteRequests} marked for deletion).");
     }
 
     private async Task Download(string name, string contentType, byte[] bytes)
@@ -364,76 +446,123 @@ else
         await JS.InvokeVoidAsync("surveyValidator.downloadFile", name, contentType, streamRef);
     }
 
-    // -------------------------------------------------------------- template
+    // ---------------------------------------------------------------- config
 
-    private async Task LoadStoredTemplate()
+    /// <summary>Uses the config remembered in this browser, or else the built-in config file.</summary>
+    private async Task LoadStartupConfig()
     {
         try
         {
             string? stored = await JS.InvokeAsync<string?>("surveyValidator.getStored", StoredTemplateKey);
-            if (string.IsNullOrWhiteSpace(stored)) return;
-            template = SurveyTemplate.Parse(stored);
-            templateName = await JS.InvokeAsync<string?>("surveyValidator.getStored", StoredTemplateNameKey) ?? "saved";
-            StateHasChanged();
+            if (!string.IsNullOrWhiteSpace(stored))
+            {
+                template = SurveyTemplate.Parse(stored);
+                templateName = await JS.InvokeAsync<string?>("surveyValidator.getStored", StoredTemplateNameKey) ?? "saved";
+            }
         }
         catch (Exception)
         {
-            // A stored template that can no longer be read is ignored; the built-in one stays in use.
+            template = null; // a remembered config that can no longer be read is ignored
+        }
+
+        if (template is null)
+            await LoadBuiltInConfig();
+        configLoading = false;
+    }
+
+    private async Task<bool> LoadBuiltInConfig()
+    {
+        try
+        {
+            template = SurveyTemplate.Parse(await Http.GetStringAsync(BuiltInConfigPath));
+            templateName = BuiltInName;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"The built-in config could not be read: {ex.Message}", isError: true);
+            return false;
         }
     }
 
-    private async Task OnTemplateFileChosen(InputFileChangeEventArgs e)
+    private async Task OnConfigFileChosen(InputFileChangeEventArgs e)
     {
         templateInputKey++;
         SurveyTemplate loaded;
         try
         {
-            using Stream stream = e.File.OpenReadStream(MaxTemplateFileBytes);
+            using Stream stream = e.File.OpenReadStream(MaxConfigFileBytes);
             using var reader = new StreamReader(stream);
             loaded = SurveyTemplate.Parse(await reader.ReadToEndAsync());
         }
         catch (Exception ex)
         {
-            SetStatus($"Template not loaded: {ex.Message}", isError: true);
+            SetStatus($"Config not loaded: {ex.Message}", isError: true);
             return;
         }
 
-        await ChangeTemplate(loaded, e.File.Name);
+        await ChangeTemplate(loaded, e.File.Name, remember: true);
     }
 
-    private Task SwapTransectMarkers() =>
-        ChangeTemplate(template.WithTransectMarkersSwapped(),
-            templateName.EndsWith(" (markers swapped)")
-                ? templateName[..^" (markers swapped)".Length]
-                : templateName + " (markers swapped)");
+    private Task OnRoleChanged(TemplateEntry entry, ChangeEventArgs e)
+    {
+        if (template is null || !Enum.TryParse(e.Value?.ToString(), out ValueRole role)) return Task.CompletedTask;
+        SurveyTemplate changed = template.WithRole(entry.Value, role);
+        IReadOnlyList<string> problems = changed.Problems();
+        if (problems.Count > 0)
+        {
+            inputEpoch++;
+            SetStatus($"Not changed: the config would then have {string.Join(", ", problems)}.", isError: true);
+            return Task.CompletedTask;
+        }
 
-    private Task ResetTemplate() => ChangeTemplate(SurveyTemplate.Default, BuiltInName);
+        string name = templateName.EndsWith(" (edited)") ? templateName : templateName.Replace(" (built-in)", "") + " (edited)";
+        return ChangeTemplate(changed, name, remember: true);
+    }
 
-    private Task ChangeTemplate(SurveyTemplate newTemplate, string name) =>
+    private Task ResetConfig() =>
         RunUnlessUnsaved(
-            $"Changing the template re-reads {fileName} and discards the edits made to it.",
+            $"Changing the config re-reads {fileName} and discards the edits made to it.",
+            async () =>
+            {
+                if (!await LoadBuiltInConfig()) return;
+                await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateKey);
+                await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateNameKey);
+                AfterTemplateChanged();
+            });
+
+    private Task ChangeTemplate(SurveyTemplate newTemplate, string name, bool remember) =>
+        RunUnlessUnsaved(
+            $"Changing the config re-reads {fileName} and discards the edits made to it.",
             async () =>
             {
                 template = newTemplate;
                 templateName = name;
-                if (name == BuiltInName)
-                {
-                    await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateKey);
-                    await JS.InvokeVoidAsync("surveyValidator.removeStored", StoredTemplateNameKey);
-                }
-                else
+                if (remember)
                 {
                     await JS.InvokeVoidAsync("surveyValidator.setStored", StoredTemplateKey, newTemplate.ToText());
                     await JS.InvokeVoidAsync("surveyValidator.setStored", StoredTemplateNameKey, name);
                 }
-
-                if (rawText is not null && fileName is not null)
-                    LoadData(rawText, fileName);
-                SetStatus($"Template in use: {name}." + (doc is null ? "" : $" {fileName} re-checked."));
+                AfterTemplateChanged();
             });
 
+    private void AfterTemplateChanged()
+    {
+        if (rawText is not null && fileName is not null)
+        {
+            LoadData(rawText, fileName);
+            if (!statusIsError) SetStatus($"Config in use: {templateName}. {fileName} re-checked.");
+        }
+        else
+        {
+            SetStatus($"Config in use: {templateName}.");
+        }
+    }
+
     private Task DownloadTemplate() =>
-        Download("survey-template.csv", "text/csv", Encoding.UTF8.GetBytes(template.ToText()));
+        template is null
+            ? Task.CompletedTask
+            : Download("survey-template.csv", "text/csv", Encoding.UTF8.GetBytes(template.ToText()));
 
     // --------------------------------------------------- unsaved-edit guard
 
@@ -460,6 +589,7 @@ else
     private void CancelPending()
     {
         pendingAction = null;
+        inputEpoch++;
         SetStatus("Cancelled. Your edits are unchanged.");
     }
 
@@ -484,6 +614,7 @@ else
             RowFilter.Incomplete => doc.Records.Where(r => !r.IsComplete).ToList(),
             RowFilter.MultipleDistances => doc.Records.Where(r => r.HasMultipleDistances).ToList(),
             RowFilter.TransectErrors => doc.Records.Where(r => r.TransectError).ToList(),
+            RowFilter.DeleteRequests => doc.Records.Where(r => r.DeleteRequested).ToList(),
             _ => doc.Records.ToList()
         };
     }
@@ -491,6 +622,7 @@ else
     private static string? RowClass(SurveyRecord r) => r.Status switch
     {
         RowStatus.TransectError => "row-transect",
+        RowStatus.DeleteRequested => "row-delete",
         RowStatus.Incomplete => "row-incomplete",
         RowStatus.MultipleDistances => "row-multi",
         _ => null
@@ -520,8 +652,18 @@ else
     private void ChooseDistance(SurveyRecord r, string distance) =>
         AfterEdit(r, doc!.SetDistance(r, distance));
 
-    private void OnGroupSize(SurveyRecord r, ChangeEventArgs e) =>
-        AfterEdit(r, doc!.SetGroupSize(r, e.Value?.ToString()));
+    private void OnCounts(SurveyRecord r, ChangeEventArgs e) =>
+        AfterEdit(r, doc!.SetCounts(r, e.Value?.ToString()));
+
+    private void OnOther(SurveyRecord r, ChangeEventArgs e) =>
+        AfterEdit(r, doc!.SetOther(r, e.Value?.ToString()));
+
+    private void KeepRow(SurveyRecord r)
+    {
+        doc!.KeepRecord(r);
+        RefreshView();
+        SetStatus($"Line {r.Line} kept: {r.Notes}");
+    }
 
     private void DeleteRow(SurveyRecord r)
     {

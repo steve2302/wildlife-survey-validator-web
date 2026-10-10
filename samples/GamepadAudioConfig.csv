@@ -1,0 +1,26 @@
+Button,AudioText,RecordedData,NewRecord
+A,one,1,No
+B,two,2,No
+Y,three,3,No
+X,four,4,No
+LeftShoulder,goat,goat,Yes
+RightShoulder,glare,glare,No
+Start_On,start transect,start_transect,Yes
+Start_Off,end transect,end_transect,Yes
+Back,delete last record,delete_last_record,No
+DPadUp,blue one hundred to two hundred meters,(blue) 100-200,No
+DPadLeft,green fifty to one hundred meters,(green) 50-100,No
+DPadDown,yellow zero to fifty meters,(yellow) 0-50,No
+DPadRight,black two hundred to three hundred meters,(black) 200-300,No
+LeftTrigger,grey kangaroo,grey_kangaroo,Yes
+RightTrigger,red kangaroo,red_kangaroo,Yes
+LeftThumbUp,blue one hundred to two hundred meters,(blue) 100-200,No
+LeftThumbLeft,green fifty to one hundred meters,(green) 50-100,No
+LeftThumbDown,yellow zero to fifty meters,(yellow) 0-50,No
+LeftThumbRight,black two hundred to three hundred meters,(black) 200-300,No
+RightThumbDown,ten,10,No
+RightThumbLeft,not configured,NA,No
+RightThumbUp,mixed species in the same group,mixed_species_group,No
+RightThumbRight,not configured,NA,No
+LeftThumbClick,not configured,NA,No
+RightThumbClick,not configured,NA,No

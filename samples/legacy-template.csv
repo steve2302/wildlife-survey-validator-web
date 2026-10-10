@@ -1,0 +1,18 @@
+# Wildlife Survey Validator template
+# The values the Windows Forms version of the validator had built in.
+# Load this from the Config panel to clean files recorded with those values.
+role,value,description
+species,red_kangaroo,red kangaroo
+species,grey_kangaroo,grey kangaroo
+species,goat,goat
+distance,yellow(0-50m),yellow zero to fifty metres
+distance,green(50-100m),green fifty to one hundred metres
+distance,blue(100-200m),blue one hundred to two hundred metres
+distance,black(200-300m),black two hundred to three hundred metres
+count,1,one
+count,2,two
+count,3,three
+count,4,four
+transect_start,break_on,start transect
+transect_end,break_off,end transect
+header_marker,AM_AM_SML,
