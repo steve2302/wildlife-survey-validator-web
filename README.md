@@ -18,7 +18,8 @@ the cleaned file is saved back to the user's own computer as a download.
   give a group size of 10).
 - Highlights lines to fix or delete:
   - orange: an entry is missing;
-  - yellow: more than one distance class was recorded, so one must be chosen;
+  - yellow: more than one distance class was recorded. The last one recorded is used unless you
+    choose another;
   - salmon: a transect marker is out of sequence;
   - grey: the observer marked the record for deletion.
 - Lets you edit or delete lines, with undo for deletions.

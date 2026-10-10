@@ -129,7 +129,8 @@ public sealed class SurveyDocument
         }
 
         record.Species = species;
-        record.Distance = distances.Count > 0 ? distances[0] : "";
+        // When several distances were recorded, the last one is the default: it is the observer's latest entry.
+        record.Distance = distances.Count > 0 ? distances[^1] : "";
         record.Counts = string.Join(",", counts);
         record.Other = string.Join(";", others);
         record.RecordedDistances = distances;

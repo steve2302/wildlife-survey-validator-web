@@ -177,25 +177,29 @@ Test("a value the config does not list is reported in the note", () =>
     Equal("Missing: species (unrecognised: gray_kangaroo)", Doc($"{F},gray_kangaroo,{Y},1").Records[0].Notes);
 });
 
-Test("multiple distances: first is used until one is chosen", () =>
+Test("multiple distances: the last recorded is the default until one is chosen", () =>
 {
-    var d = Doc($"{F},grey_kangaroo,{B},{G},2");
+    var d = Doc($"{F},grey_kangaroo,{B},{G},2", $"{F},goat,{Y},{K},{B},1");
     var r = d.Records[0];
-    Equal(B, r.Distance); True(r.HasMultipleDistances, "flagged");
+    Equal(G, r.Distance, "last of two"); True(r.HasMultipleDistances, "still flagged");
+    Equal(B, d.Records[1].Distance, "last of three");
     Equal("Multiple distances found: 2", r.Notes);
-    Equal(RowStatus.MultipleDistances, r.Status); Equal(1, d.Summary.MultipleDistances);
+    Equal($"{B}, {G}", r.AllDistancesText);
+    Equal(RowStatus.MultipleDistances, r.Status); Equal(2, d.Summary.MultipleDistances);
+    True(d.ToCsv().Split("\r\n")[1].EndsWith($"grey_kangaroo,2,2,{G},"), "the default is what gets saved");
 
-    Equal(null, d.SetDistance(r, G));
+    Equal(null, d.SetDistance(r, B));
     True(!r.HasMultipleDistances, "resolved");
     Equal("Complete record (multiple distances resolved)", r.Notes);
-    Equal($"Selected: {G} from [{B}, {G}]", r.AllDistancesText);
+    Equal($"Selected: {B} from [{B}, {G}]", r.AllDistancesText);
 });
 
 Test("choosing the distance already shown also resolves the row", () =>
 {
     var d = Doc($"{F},goat,{B},{G},2");
-    d.SetDistance(d.Records[0], B);
+    d.SetDistance(d.Records[0], G);
     True(!d.Records[0].HasMultipleDistances, "resolved");
+    Equal(G, d.Records[0].Distance);
 });
 
 Test("header line is skipped and no data line is lost", () =>
@@ -301,7 +305,7 @@ Test("export has counts, the summed group size, distance and other", () =>
         "Time,TimeOfDay,ObserverID,ObserverPosition,UTC,Latitude,Longitude,Bearing,Altitude,VTOL,HTOL,Species,Counts,GroupSize,Distance,Other\r\n" +
         $"{F},start_transect,,,,\r\n" +
         $"{F},goat,3,3,{B},\r\n" +
-        $"{F},red_kangaroo,\"4,10\",14,{K},glare\r\n" +
+        $"{F},red_kangaroo,\"4,10\",14,{Y},glare\r\n" +
         $"{F},end_transect,,,,\r\n";
     Equal(expected, d.ToCsv());
 });
